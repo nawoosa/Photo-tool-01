@@ -35,20 +35,32 @@ a{color:var(--ac)}
 
 <div class="card">
   <h2>2) الخيارات</h2>
+  <label>المحرّك
+    <select id="engine">
+      <option value="local">نماذجي الخاصة (مجاني)</option>
+      <option value="api">PhotoRoom API (أعلى جودة، مدفوع)</option>
+    </select>
+  </label>
   <label><input type="checkbox" id="wm"> إزالة العلامة المائية</label>
   <div class="sub" id="wmBox">
+    <label class="api" style="display:none">نوع النص المراد إزالته
+      <select id="textmode"><option value="ai.artificial">علامات وكتابة مضافة (الأنسب)</option>
+      <option value="ai.all">كل النصوص</option></select></label>
+    <div class="loc">
     <p class="mut">ارسم مربعاً بإصبعك أو الماوس على مكان العلامة (على أول صورة). يُطبّق نفس المكان على كل الصور.</p>
     <label>طريقة الإزالة
       <select id="wmengine"><option value="lama">LaMa (سريع)</option>
+      <option value="sdxl">SDXL Inpainting (GPU، الأدق للعلامة)</option>
       <option value="sd">Diffusion (ذكي، بطيء جداً، تحميل ~4GB)</option></select></label>
     <label><input type="checkbox" id="precise" checked> قناع دقيق: يحدد حروف العلامة داخل المربع فقط</label>
     <canvas id="cv"></canvas>
     <button class="sec" type="button" id="clr">مسح المربعات</button>
-  </div>
+  </div></div>
   <label><input type="checkbox" id="bg"> إزالة الخلفية</label>
   <div class="sub" id="bgBox">
-    <label>النموذج
+    <label class="loc">النموذج
       <select id="model">
+        <option value="hr">BiRefNet HR 2048 (الأدق، يحتاج GPU)</option>
         <option value="birefnet">BiRefNet عام (متوازن)</option>
         <option value="massive">BiRefNet Massive (مدرّب على بيانات أكثر)</option>
         <option value="dis">BiRefNet DIS (حواف الأجسام الدقيقة)</option>
@@ -56,7 +68,7 @@ a{color:var(--ac)}
         <option value="bria">Bria RMBG (أسرع، ترخيص غير تجاري)</option>
       </select>
     </label>
-    <label><input type="checkbox" id="hq" checked> جودة عالية: matting + إزالة الهالة (أبطأ بكثير)</label>
+    <label class="loc"><input type="checkbox" id="hq" checked> جودة عالية: matting + إزالة الهالة (أبطأ بكثير)</label>
     <label><input type="checkbox" id="studio"> خلفية استديو بيضاء + ظل (اختياري)</label>
     <div class="sub" id="stBox">
       <label>قوة الظل: <span id="shv">40</span><input type="range" id="shadow" min="0" max="100" value="40"></label>
@@ -78,6 +90,10 @@ const cv=$('cv'),ctx=cv.getContext('2d');
 function tog(){ $('wmBox').classList.toggle('on',$('wm').checked); $('bgBox').classList.toggle('on',$('bg').checked);
   $('stBox').classList.toggle('on',$('bg').checked&&$('studio').checked); if($('wm').checked&&img)draw(); }
 ['wm','bg','studio'].forEach(i=>$(i).onchange=tog);
+function eng(){const a=$('engine').value==='api';
+  document.querySelectorAll('.loc').forEach(e=>e.style.display=a?'none':'');
+  document.querySelectorAll('.api').forEach(e=>e.style.display=a?'block':'none')}
+$('engine').onchange=eng;
 $('shadow').oninput=()=>$('shv').textContent=$('shadow').value;
 $('files').onchange=e=>{
   const f=e.target.files; $('count').textContent=f.length?`تم اختيار ${f.length} صورة`:'';
@@ -101,8 +117,8 @@ $('go').onclick=async()=>{
   const f=$('files').files;
   if(!f.length)return $('msg').textContent='اختر الصور أولاً';
   if(!$('wm').checked&&!$('bg').checked)return $('msg').textContent='فعّل خياراً واحداً على الأقل';
-  if($('wm').checked&&!rects.length)return $('msg').textContent='ارسم مربع العلامة المائية';
-  const o={wm:$('wm').checked,rects,precise:$('precise').checked,wmengine:$('wmengine').value,hq:$('hq').checked,bg:$('bg').checked,model:$('model').value,
+  if($('wm').checked&&!rects.length&&$('engine').value==='local')return $('msg').textContent='ارسم مربع العلامة المائية';
+  const o={engine:$('engine').value,textmode:$('textmode').value,wm:$('wm').checked,rects,precise:$('precise').checked,wmengine:$('wmengine').value,hq:$('hq').checked,bg:$('bg').checked,model:$('model').value,
     studio:$('bg').checked&&$('studio').checked,shadow:+$('shadow').value,size:+$('size').value};
   $('go').disabled=true;
   try{

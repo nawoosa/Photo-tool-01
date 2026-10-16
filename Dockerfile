@@ -5,12 +5,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # PyTorch نسخة CPU (أخف بكثير)
 RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
-RUN pip install --no-cache-dir iopaint "rembg[cpu]" python-multipart
+RUN pip install --no-cache-dir iopaint "rembg[cpu]" python-multipart opencv-python-headless pymatting
+RUN pip install --no-cache-dir "transformers==4.44.2" timm kornia einops requests
 
 ENV DATA_DIR=/data \
     U2NET_HOME=/data/models \
     TORCH_HOME=/data/torch \
-    XDG_CACHE_HOME=/data/cache
+    XDG_CACHE_HOME=/data/cache \
+    HF_HOME=/data/hf \
+    HQ_SIDE=2000
 
 WORKDIR /app
 COPY app.py index.html ./

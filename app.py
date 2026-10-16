@@ -13,7 +13,7 @@ JOBS.mkdir(parents=True, exist_ok=True)
 PASSWORD = os.getenv("APP_PASSWORD", "")
 MODELS = {"birefnet": "birefnet-general", "massive": "birefnet-massive", "dis": "birefnet-dis",
           "hrsod": "birefnet-hrsod", "bria": "bria-rmbg"}
-HQ_SIDE = 1500
+HQ_SIDE = int(os.getenv("HQ_SIDE", "1500"))
 
 security = HTTPBasic(auto_error=False)
 
@@ -32,12 +32,42 @@ _sessions = {}
 
 _inp = {}
 SD_NAME = "Uminosachi/realisticVisionV51_v51VAE-inpainting"
+SDXL_NAME = "diffusers/stable-diffusion-xl-1.0-inpainting-0.1"
+_hr = None
+
+
+def device():
+    import torch
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def hr_mask(img):
+    """BiRefNet HR بدقة 2048"""
+    global _hr
+    import torch
+    from torchvision import transforms
+    dev = device()
+    if _hr is None:
+        from transformers import AutoModelForImageSegmentation
+        m = AutoModelForImageSegmentation.from_pretrained("ZhengPeng7/BiRefNet_HR", trust_remote_code=True)
+        m.to(dev).eval()
+        if dev == "cuda":
+            m.half()
+        _hr = m
+    tf = transforms.Compose([transforms.Resize((2048, 2048)), transforms.ToTensor(),
+                             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+    x = tf(img).unsqueeze(0).to(dev)
+    if dev == "cuda":
+        x = x.half()
+    with torch.no_grad():
+        p = _hr(x)[-1].sigmoid().float().cpu()[0].squeeze()
+    return transforms.ToPILImage()(p).resize(img.size, Image.LANCZOS)
 
 
 def get_inpainter(name):
     if name not in _inp:
         from iopaint.model_manager import ModelManager
-        _inp[name] = ModelManager(name=name, device="cpu")
+        _inp[name] = ModelManager(name=name, device=device())
     return _inp[name]
 
 
@@ -80,8 +110,8 @@ def build_mask(img, rects, precise):
 def remove_watermark(img, rects, precise=True, engine="lama"):
     from iopaint.schema import InpaintRequest
     mask = build_mask(img, rects, precise)
-    if engine == "sd":
-        mgr = get_inpainter(SD_NAME)
+    if engine in ("sd", "sdxl"):
+        mgr = get_inpainter(SD_NAME if engine == "sd" else SDXL_NAME)
         req = InpaintRequest(prompt="clean plain product photo, no text, no watermark",
                              negative_prompt="text, watermark, logo, letters, signature",
                              sd_steps=30)
@@ -92,13 +122,13 @@ def remove_watermark(img, rects, precise=True, engine="lama"):
     return Image.fromarray(cv2.cvtColor(res.astype(np.uint8), cv2.COLOR_BGR2RGB))
 
 
-def hq_cutout(img, session):
+def hq_cutout(img, key):
     """قناع النموذج -> trimap -> closed-form matting -> إزالة هالة الخلفية"""
     from rembg import remove
     try:
         from pymatting import estimate_alpha_cf, estimate_foreground_ml
         orig = img.size
-        mask = remove(img, session=session, only_mask=True)
+        mask = hr_mask(img) if key == "hr" else remove(img, session=get_session(key), only_mask=True)
         sc = min(1.0, HQ_SIDE / max(orig))
         sz = (int(orig[0] * sc), int(orig[1] * sc))
         im_s, m_s = img.resize(sz, Image.LANCZOS), mask.resize(sz, Image.LANCZOS)
@@ -118,7 +148,16 @@ def hq_cutout(img, session):
         return out
     except Exception as e:
         print("hq failed, fallback:", e, flush=True)
-        return remove(img, session=session)
+        return simple_cutout(img, key)
+
+
+def simple_cutout(img, key):
+    from rembg import remove
+    if key == "hr":
+        c = img.convert("RGBA")
+        c.putalpha(hr_mask(img))
+        return c
+    return remove(img, session=get_session(key))
 
 
 def studio(cut, size, shadow):
@@ -140,15 +179,56 @@ def studio(cut, size, shadow):
     return canvas
 
 
+def photoroom(src, dst_dir, opts):
+    """PhotoRoom Image Editing API: إزالة خلفية + استديو + ظل + إزالة علامة نصية"""
+    import io
+    import requests
+    key = os.getenv("PHOTOROOM_API_KEY", "")
+    if not key:
+        raise RuntimeError("PHOTOROOM_API_KEY غير مضبوط")
+    d = {"removeBackground": "true" if opts.get("bg") else "false"}
+    if opts.get("wm"):
+        d["textRemoval.mode"] = opts.get("textmode", "ai.artificial")
+    is_studio = bool(opts.get("bg") and opts.get("studio"))
+    if is_studio:
+        size = int(opts.get("size", 1200))
+        d.update({"background.color": "FFFFFF", "outputSize": f"{size}x{size}", "padding": "0.08"})
+        if int(opts.get("shadow", 40)) > 0:
+            d["shadow.mode"] = "ai.soft"
+    r = None
+    for attempt in range(3):
+        with open(src, "rb") as f:
+            r = requests.post("https://image-api.photoroom.com/v2/edit", headers={"x-api-key": key},
+                              files={"imageFile": f}, data=d, timeout=180)
+        if r.status_code == 200:
+            break
+        if r.status_code not in (429, 500, 502, 503, 504):
+            break
+        time.sleep(3 * (attempt + 1))
+    if r.status_code != 200:
+        raise RuntimeError(f"PhotoRoom {r.status_code}: {r.text[:150]}")
+    im = Image.open(io.BytesIO(r.content))
+    stem = Path(src).stem
+    if is_studio:
+        name = stem + ".jpg"
+        im.convert("RGB").save(dst_dir / name, quality=95, subsampling=0)
+    else:
+        name = stem + ".png"
+        im.save(dst_dir / name)
+    return name
+
+
 def process(src, dst_dir, opts):
+    if opts.get("engine") == "api":
+        return photoroom(src, dst_dir, opts)
     from rembg import remove
     img = ImageOps.exif_transpose(Image.open(src)).convert("RGB")
     if opts.get("wm") and opts.get("rects"):
         img = remove_watermark(img, opts["rects"], opts.get("precise", True), opts.get("wmengine", "lama"))
     stem = Path(src).stem
     if opts.get("bg"):
-        sess = get_session(opts.get("model", "birefnet"))
-        cut = hq_cutout(img, sess) if opts.get("hq", True) else remove(img, session=sess)
+        key = opts.get("model", "birefnet")
+        cut = hq_cutout(img, key) if opts.get("hq", True) else simple_cutout(img, key)
         if opts.get("studio"):
             out = studio(cut, int(opts.get("size", 1200)), int(opts.get("shadow", 40)))
             name = stem + ".jpg"
