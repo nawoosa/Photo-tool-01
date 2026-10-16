@@ -38,6 +38,10 @@ a{color:var(--ac)}
   <label><input type="checkbox" id="wm"> إزالة العلامة المائية</label>
   <div class="sub" id="wmBox">
     <p class="mut">ارسم مربعاً بإصبعك أو الماوس على مكان العلامة (على أول صورة). يُطبّق نفس المكان على كل الصور.</p>
+    <label>طريقة الإزالة
+      <select id="wmengine"><option value="lama">LaMa (سريع)</option>
+      <option value="sd">Diffusion (ذكي، بطيء جداً، تحميل ~4GB)</option></select></label>
+    <label><input type="checkbox" id="precise" checked> قناع دقيق: يحدد حروف العلامة داخل المربع فقط</label>
     <canvas id="cv"></canvas>
     <button class="sec" type="button" id="clr">مسح المربعات</button>
   </div>
@@ -45,10 +49,14 @@ a{color:var(--ac)}
   <div class="sub" id="bgBox">
     <label>النموذج
       <select id="model">
-        <option value="birefnet">BiRefNet (الأدق، أبطأ)</option>
+        <option value="birefnet">BiRefNet عام (متوازن)</option>
+        <option value="massive">BiRefNet Massive (مدرّب على بيانات أكثر)</option>
+        <option value="dis">BiRefNet DIS (حواف الأجسام الدقيقة)</option>
+        <option value="hrsod">BiRefNet HRSOD (دقة عالية)</option>
         <option value="bria">Bria RMBG (أسرع، ترخيص غير تجاري)</option>
       </select>
     </label>
+    <label><input type="checkbox" id="hq" checked> جودة عالية: matting + إزالة الهالة (أبطأ بكثير)</label>
     <label><input type="checkbox" id="studio"> خلفية استديو بيضاء + ظل (اختياري)</label>
     <div class="sub" id="stBox">
       <label>قوة الظل: <span id="shv">40</span><input type="range" id="shadow" min="0" max="100" value="40"></label>
@@ -94,7 +102,7 @@ $('go').onclick=async()=>{
   if(!f.length)return $('msg').textContent='اختر الصور أولاً';
   if(!$('wm').checked&&!$('bg').checked)return $('msg').textContent='فعّل خياراً واحداً على الأقل';
   if($('wm').checked&&!rects.length)return $('msg').textContent='ارسم مربع العلامة المائية';
-  const o={wm:$('wm').checked,rects,bg:$('bg').checked,model:$('model').value,
+  const o={wm:$('wm').checked,rects,precise:$('precise').checked,wmengine:$('wmengine').value,hq:$('hq').checked,bg:$('bg').checked,model:$('model').value,
     studio:$('bg').checked&&$('studio').checked,shadow:+$('shadow').value,size:+$('size').value};
   $('go').disabled=true;
   try{
