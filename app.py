@@ -11,7 +11,9 @@ DATA = Path(os.getenv("DATA_DIR", "/data"))
 JOBS = DATA / "jobs"
 JOBS.mkdir(parents=True, exist_ok=True)
 PASSWORD = os.getenv("APP_PASSWORD", "")
-MODELS = {"birefnet": "birefnet-general", "bria": "bria-rmbg"}
+MODELS = {"birefnet": "birefnet-general", "massive": "birefnet-massive", "dis": "birefnet-dis",
+          "hrsod": "birefnet-hrsod", "bria": "bria-rmbg"}
+HQ_SIDE = 1500
 
 security = HTTPBasic(auto_error=False)
 
@@ -28,12 +30,15 @@ _lama = None
 _sessions = {}
 
 
-def get_lama():
-    global _lama
-    if _lama is None:
+_inp = {}
+SD_NAME = "Uminosachi/realisticVisionV51_v51VAE-inpainting"
+
+
+def get_inpainter(name):
+    if name not in _inp:
         from iopaint.model_manager import ModelManager
-        _lama = ModelManager(name="lama", device="cpu")
-    return _lama
+        _inp[name] = ModelManager(name=name, device="cpu")
+    return _inp[name]
 
 
 def get_session(key):
@@ -52,17 +57,68 @@ def load(jid):
     return json.loads((JOBS / jid / "job.json").read_text())
 
 
-def remove_watermark(img, rects):
-    from iopaint.schema import InpaintRequest
+def build_mask(img, rects, precise):
     w, h = img.size
     mask = np.zeros((h, w), np.uint8)
+    gray = np.array(img.convert("L"))
     for x, y, rw, rh in rects:
-        x0, y0 = int(x * w), int(y * h)
-        x1, y1 = int((x + rw) * w), int((y + rh) * h)
-        mask[max(y0, 0):y1, max(x0, 0):x1] = 255
-    mask = cv2.dilate(mask, np.ones((7, 7), np.uint8))
-    res = get_lama()(np.array(img), mask, InpaintRequest())
+        x0, y0 = max(int(x * w), 0), max(int(y * h), 0)
+        x1, y1 = min(int((x + rw) * w), w), min(int((y + rh) * h), h)
+        box = np.full((y1 - y0, x1 - x0), 255, np.uint8)
+        if precise:
+            crop = gray[y0:y1, x0:x1]
+            k = 31 if min(crop.shape) > 40 else 5
+            diff = cv2.absdiff(crop, cv2.medianBlur(crop, k))
+            _, t = cv2.threshold(diff, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            t = cv2.dilate(t, np.ones((5, 5), np.uint8), iterations=2)
+            if 0.003 < t.mean() / 255 < 0.6:
+                box = t
+        mask[y0:y1, x0:x1] = box
+    return cv2.dilate(mask, np.ones((5, 5), np.uint8))
+
+
+def remove_watermark(img, rects, precise=True, engine="lama"):
+    from iopaint.schema import InpaintRequest
+    mask = build_mask(img, rects, precise)
+    if engine == "sd":
+        mgr = get_inpainter(SD_NAME)
+        req = InpaintRequest(prompt="clean plain product photo, no text, no watermark",
+                             negative_prompt="text, watermark, logo, letters, signature",
+                             sd_steps=30)
+    else:
+        mgr = get_inpainter("lama")
+        req = InpaintRequest()
+    res = mgr(np.array(img), mask, req)
     return Image.fromarray(cv2.cvtColor(res.astype(np.uint8), cv2.COLOR_BGR2RGB))
+
+
+def hq_cutout(img, session):
+    """قناع النموذج -> trimap -> closed-form matting -> إزالة هالة الخلفية"""
+    from rembg import remove
+    try:
+        from pymatting import estimate_alpha_cf, estimate_foreground_ml
+        orig = img.size
+        mask = remove(img, session=session, only_mask=True)
+        sc = min(1.0, HQ_SIDE / max(orig))
+        sz = (int(orig[0] * sc), int(orig[1] * sc))
+        im_s, m_s = img.resize(sz, Image.LANCZOS), mask.resize(sz, Image.LANCZOS)
+        arr = np.asarray(im_s, np.float64) / 255.0
+        m = (np.asarray(m_s) > 127).astype(np.uint8)
+        k = max(5, int(max(sz) * 0.005)) | 1
+        ker = np.ones((k, k), np.uint8)
+        trimap = np.full(m.shape, 0.5)
+        trimap[cv2.erode(m, ker) == 1] = 1.0
+        trimap[cv2.dilate(m, ker) == 0] = 0.0
+        alpha = np.clip(estimate_alpha_cf(arr, trimap), 0, 1)
+        fg = estimate_foreground_ml(arr, alpha)
+        rgba = np.dstack([fg, alpha])
+        out = Image.fromarray((np.clip(rgba, 0, 1) * 255).astype(np.uint8), "RGBA")
+        if sc < 1.0:
+            out = out.resize(orig, Image.LANCZOS)
+        return out
+    except Exception as e:
+        print("hq failed, fallback:", e, flush=True)
+        return remove(img, session=session)
 
 
 def studio(cut, size, shadow):
@@ -88,10 +144,11 @@ def process(src, dst_dir, opts):
     from rembg import remove
     img = ImageOps.exif_transpose(Image.open(src)).convert("RGB")
     if opts.get("wm") and opts.get("rects"):
-        img = remove_watermark(img, opts["rects"])
+        img = remove_watermark(img, opts["rects"], opts.get("precise", True), opts.get("wmengine", "lama"))
     stem = Path(src).stem
     if opts.get("bg"):
-        cut = remove(img, session=get_session(opts.get("model", "birefnet")), post_process_mask=True)
+        sess = get_session(opts.get("model", "birefnet"))
+        cut = hq_cutout(img, sess) if opts.get("hq", True) else remove(img, session=sess)
         if opts.get("studio"):
             out = studio(cut, int(opts.get("size", 1200)), int(opts.get("shadow", 40)))
             name = stem + ".jpg"
