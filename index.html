@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>معالجة صور المتجر</title>
+<style>
+:root{--bg:#f6f6f4;--card:#fff;--tx:#1d1d1b;--mut:#6b6b66;--bd:#e2e2dc;--ac:#0f6e56}
+@media(prefers-color-scheme:dark){:root{--bg:#161615;--card:#22221f;--tx:#eee;--mut:#9a9a93;--bd:#37372f;--ac:#3cc9a0}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:16px system-ui,sans-serif;padding:16px;max-width:760px;margin:auto}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:16px;margin-bottom:14px}
+h1{font-size:20px}h2{font-size:16px;margin:0 0 10px}
+label{display:block;margin:8px 0}
+select,input[type=range]{width:100%;padding:8px;border-radius:8px;border:1px solid var(--bd);background:var(--bg);color:var(--tx)}
+button{background:var(--ac);color:#fff;border:0;border-radius:8px;padding:12px 16px;font-size:16px;cursor:pointer}
+button.sec{background:transparent;color:var(--tx);border:1px solid var(--bd)}
+.sub{margin-inline-start:24px;display:none}.sub.on{display:block}
+canvas{max-width:100%;border:1px solid var(--bd);border-radius:8px;touch-action:none;display:none}
+.mut{color:var(--mut);font-size:14px}
+.bar{height:8px;background:var(--bd);border-radius:4px;overflow:hidden;margin:8px 0}
+.bar i{display:block;height:100%;background:var(--ac)}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+a{color:var(--ac)}
+</style>
+</head>
+<body>
+<h1>معالجة صور المتجر</h1>
+
+<div class="card">
+  <h2>1) الصور</h2>
+  <input type="file" id="files" accept="image/*" multiple>
+  <p class="mut" id="count"></p>
+</div>
+
+<div class="card">
+  <h2>2) الخيارات</h2>
+  <label><input type="checkbox" id="wm"> إزالة العلامة المائية</label>
+  <div class="sub" id="wmBox">
+    <p class="mut">ارسم مربعاً بإصبعك أو الماوس على مكان العلامة (على أول صورة). يُطبّق نفس المكان على كل الصور.</p>
+    <canvas id="cv"></canvas>
+    <button class="sec" type="button" id="clr">مسح المربعات</button>
+  </div>
+  <label><input type="checkbox" id="bg"> إزالة الخلفية</label>
+  <div class="sub" id="bgBox">
+    <label>النموذج
+      <select id="model">
+        <option value="birefnet">BiRefNet (الأدق، أبطأ)</option>
+        <option value="bria">Bria RMBG (أسرع، ترخيص غير تجاري)</option>
+      </select>
+    </label>
+    <label><input type="checkbox" id="studio"> خلفية استديو بيضاء + ظل (اختياري)</label>
+    <div class="sub" id="stBox">
+      <label>قوة الظل: <span id="shv">40</span><input type="range" id="shadow" min="0" max="100" value="40"></label>
+      <label>مقاس الصورة النهائية
+        <select id="size"><option>1000</option><option selected>1200</option><option>1600</option><option>2000</option></select>
+      </label>
+    </div>
+  </div>
+  <button id="go" style="margin-top:12px;width:100%">ابدأ المعالجة</button>
+  <p class="mut" id="msg"></p>
+</div>
+
+<div class="card"><h2>العمليات</h2><div id="jobs" class="mut">لا يوجد شيء بعد</div></div>
+
+<script>
+const $=id=>document.getElementById(id);
+let rects=[],img=null,cur=null,drag=null;
+const cv=$('cv'),ctx=cv.getContext('2d');
+function tog(){ $('wmBox').classList.toggle('on',$('wm').checked); $('bgBox').classList.toggle('on',$('bg').checked);
+  $('stBox').classList.toggle('on',$('bg').checked&&$('studio').checked); if($('wm').checked&&img)draw(); }
+['wm','bg','studio'].forEach(i=>$(i).onchange=tog);
+$('shadow').oninput=()=>$('shv').textContent=$('shadow').value;
+$('files').onchange=e=>{
+  const f=e.target.files; $('count').textContent=f.length?`تم اختيار ${f.length} صورة`:'';
+  if(!f.length)return; img=new Image(); img.onload=()=>{rects=[];draw()}; img.src=URL.createObjectURL(f[0]);
+};
+function draw(){
+  if(!img)return; const w=Math.min(img.naturalWidth,700); cv.width=w; cv.height=w*img.naturalHeight/img.naturalWidth;
+  cv.style.display='block'; ctx.drawImage(img,0,0,cv.width,cv.height);
+  ctx.lineWidth=2; ctx.strokeStyle='#e24b4a'; ctx.fillStyle='rgba(226,75,74,.25)';
+  [...rects,...(cur?[cur]:[])].forEach(r=>{ctx.fillRect(r[0]*cv.width,r[1]*cv.height,r[2]*cv.width,r[3]*cv.height);
+    ctx.strokeRect(r[0]*cv.width,r[1]*cv.height,r[2]*cv.width,r[3]*cv.height)});
+}
+function pt(e){const b=cv.getBoundingClientRect();return[(e.clientX-b.left)/b.width,(e.clientY-b.top)/b.height]}
+cv.onpointerdown=e=>{drag=pt(e);cv.setPointerCapture(e.pointerId)};
+cv.onpointermove=e=>{if(!drag)return;const p=pt(e);
+  cur=[Math.min(drag[0],p[0]),Math.min(drag[1],p[1]),Math.abs(p[0]-drag[0]),Math.abs(p[1]-drag[1])];draw()};
+cv.onpointerup=()=>{if(cur&&cur[2]>.005&&cur[3]>.005)rects.push(cur);cur=null;drag=null;draw()};
+$('clr').onclick=()=>{rects=[];draw()};
+
+$('go').onclick=async()=>{
+  const f=$('files').files;
+  if(!f.length)return $('msg').textContent='اختر الصور أولاً';
+  if(!$('wm').checked&&!$('bg').checked)return $('msg').textContent='فعّل خياراً واحداً على الأقل';
+  if($('wm').checked&&!rects.length)return $('msg').textContent='ارسم مربع العلامة المائية';
+  const o={wm:$('wm').checked,rects,bg:$('bg').checked,model:$('model').value,
+    studio:$('bg').checked&&$('studio').checked,shadow:+$('shadow').value,size:+$('size').value};
+  $('go').disabled=true;
+  try{
+    const fd=new FormData(); fd.append('opts',JSON.stringify(o));
+    let r=await fetch('/api/jobs',{method:'POST',body:fd});
+    if(!r.ok)throw new Error('إنشاء العملية: '+r.status+' '+(await r.text()).slice(0,150));
+    const id=(await r.json()).id;
+    for(let i=0;i<f.length;i++){
+      $('msg').textContent=`جاري الرفع ${i+1}/${f.length}`;
+      let ok=false,err='';
+      for(let t=0;t<3&&!ok;t++){
+        try{const x=new FormData();x.append('file',f[i]);
+          r=await fetch(`/api/jobs/${id}/files`,{method:'POST',body:x});
+          if(r.ok)ok=true;else err=r.status+' '+(await r.text()).slice(0,150);
+        }catch(e){err='انقطاع الاتصال'}
+      }
+      if(!ok)throw new Error(`الصورة ${f[i].name}: ${err}`);
+    }
+    await fetch(`/api/jobs/${id}/start`,{method:'POST'});
+    $('msg').textContent='تم الرفع. المعالجة تعمل بالخلفية، يمكنك إغلاق الصفحة.'; load();
+  }catch(e){$('msg').textContent='فشل الرفع: '+e.message}
+  $('go').disabled=false;
+};
+const st={uploading:'جاري الرفع',queued:'في الانتظار',running:'قيد المعالجة',finished:'اكتملت'};
+async function load(){
+  try{
+    const js=await (await fetch('/api/jobs')).json();
+    if(!js.length)return;
+    $('jobs').innerHTML=js.map(j=>{
+      const p=Math.round(j.done/(j.total||1)*100), err=j.files.filter(x=>x.status==='error');
+      return `<div style="border-top:1px solid var(--bd);padding:10px 0">
+        <b>${st[j.status]||j.status}</b> — ${j.done}/${j.total}
+        <div class="bar"><i style="width:${p}%"></i></div>
+        <div class="row">${j.done?`<a href="/api/jobs/${j.id}/zip">تحميل ZIP</a>`:''}
+        <button class="sec" onclick="del('${j.id}')">حذف</button></div>
+        ${err.length?`<div class="mut">فشلت ${err.length} صورة: ${err.map(x=>x.name).join('، ')}</div>`:''}
+        <details><summary class="mut">الملفات</summary>${j.files.filter(x=>x.out).map(x=>
+          `<div><a href="/api/jobs/${j.id}/file/${encodeURIComponent(x.out)}" target="_blank">${x.name}</a></div>`).join('')}</details>
+      </div>`}).join('');
+  }catch(e){}
+}
+async function del(id){if(confirm('حذف العملية وملفاتها؟')){await fetch('/api/jobs/'+id,{method:'DELETE'});load()}}
+load(); setInterval(load,3000);
+</script>
+</body>
+</html>
